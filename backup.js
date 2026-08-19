@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const archiver = require('archiver');
+const User = require('./models/User');
+const Mod = require('./models/Mod');
+const Comment = require('./models/Comment');
+const Rating = require('./models/Rating');
+const Suggestion = require('./models/Suggestion');
 
 class BackupManager {
   constructor(backupDir) {
@@ -17,43 +21,47 @@ class BackupManager {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupName = `backup-${timestamp}.zip`;
     const backupPath = path.join(this.backupDir, backupName);
-    const dumpFile = path.join(this.backupDir, `dump-${timestamp}.sql`);
+    const dumpFile = path.join(this.backupDir, `dump-${timestamp}.json`);
 
     return new Promise((resolve, reject) => {
       try {
-        // Export PostgreSQL data to SQL file
-        const dbUrl = process.env.DATABASE_URL;
-        if (!dbUrl) {
-          console.log('[BACKUP] No DATABASE_URL, skipping');
-          return resolve(null);
-        }
+        // Export MongoDB data to JSON
+        const exportData = async () => {
+          const users = await User.find().lean();
+          const mods = await Mod.find().lean();
+          const comments = await Comment.find().lean();
+          const ratings = await Rating.find().lean();
+          const suggestions = await Suggestion.find().lean();
 
-        try {
-          execSync(`pg_dump "${dbUrl}" > "${dumpFile}"`, { timeout: 30000 });
-        } catch (dumpErr) {
-          console.error('[BACKUP] pg_dump failed:', dumpErr.message);
-          return resolve(null);
-        }
+          return { users, mods, comments, ratings, suggestions, exportedAt: new Date().toISOString() };
+        };
 
-        const output = fs.createWriteStream(backupPath);
-        const archive = archiver('zip', { zlib: { level: 9 } });
+        exportData().then(data => {
+          fs.writeFileSync(dumpFile, JSON.stringify(data, null, 2));
+          console.log(`[BACKUP] MongoDB data exported to ${dumpFile}`);
 
-        output.on('close', () => {
-          console.log(`[BACKUP] Created: ${backupName} (${archive.pointer()} bytes)`);
-          // Clean up SQL dump file
-          if (fs.existsSync(dumpFile)) fs.unlinkSync(dumpFile);
-          this.cleanOldBackups();
-          resolve(backupPath);
+          const output = fs.createWriteStream(backupPath);
+          const archive = archiver('zip', { zlib: { level: 9 } });
+
+          output.on('close', () => {
+            console.log(`[BACKUP] Created: ${backupName} (${archive.pointer()} bytes)`);
+            if (fs.existsSync(dumpFile)) fs.unlinkSync(dumpFile);
+            this.cleanOldBackups();
+            resolve(backupPath);
+          });
+
+          archive.on('error', reject);
+          archive.pipe(output);
+
+          if (fs.existsSync(dumpFile)) {
+            archive.file(dumpFile, { name: 'database.json' });
+          }
+
+          archive.finalize();
+        }).catch(err => {
+          console.error('[BACKUP] Export failed:', err.message);
+          resolve(null);
         });
-
-        archive.on('error', reject);
-        archive.pipe(output);
-
-        if (fs.existsSync(dumpFile)) {
-          archive.file(dumpFile, { name: 'database.sql' });
-        }
-
-        archive.finalize();
       } catch (err) {
         console.error('[BACKUP] Error:', err.message);
         reject(err);

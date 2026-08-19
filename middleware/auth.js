@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const db = require('../database');
+const User = require('../models/User');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -13,24 +13,27 @@ function authMiddleware(req, res, next) {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Verify user still exists and is not locked
-    const user = db.prepare('SELECT id, username, email, role, locked_until FROM users WHERE id = ?').get(decoded.id);
-    if (!user) {
-      return res.status(401).json({ error: 'User not found.' });
-    }
+    // Use setTimeout to avoid blocking the event loop for DB check
+    User.findById(decoded.id).select('username email role lockedUntil').then(user => {
+      if (!user) {
+        return res.status(401).json({ error: 'User not found.' });
+      }
 
-    if (user.locked_until && new Date(user.locked_until) > new Date()) {
-      return res.status(423).json({ error: 'Account is locked.' });
-    }
+      if (user.lockedUntil && user.lockedUntil > new Date()) {
+        return res.status(423).json({ error: 'Account is locked.' });
+      }
 
-    req.user = {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      role: user.role
-    };
+      req.user = {
+        id: user._id.toString(),
+        username: user.username,
+        email: user.email,
+        role: user.role
+      };
 
-    next();
+      next();
+    }).catch(() => {
+      return res.status(401).json({ error: 'Auth failed.' });
+    });
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Token expired.' });
@@ -52,13 +55,18 @@ function optionalAuth(req, res, next) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.split(' ')[1];
       const decoded = jwt.verify(token, JWT_SECRET);
-      const user = db.prepare('SELECT id, username, email, role FROM users WHERE id = ?').get(decoded.id);
-      if (user) {
-        req.user = { id: user.id, username: user.username, email: user.email, role: user.role };
-      }
+      User.findById(decoded.id).select('username email role').then(user => {
+        if (user) {
+          req.user = { id: user._id.toString(), username: user.username, email: user.email, role: user.role };
+        }
+        next();
+      }).catch(() => next());
+    } else {
+      next();
     }
-  } catch {}
-  next();
+  } catch {
+    next();
+  }
 }
 
 module.exports = { authMiddleware, adminOnly, optionalAuth };

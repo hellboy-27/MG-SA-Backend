@@ -2,7 +2,9 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const db = require('../database');
+const Mod = require('../models/Mod');
+const Comment = require('../models/Comment');
+const Rating = require('../models/Rating');
 const { authMiddleware, adminOnly, optionalAuth } = require('../middleware/auth');
 const { contentLimiter } = require('../middleware/security');
 
@@ -39,19 +41,14 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB max
+  limits: { fileSize: 100 * 1024 * 1024 }
 });
 
 // Get all mods (public)
 router.get('/', async (req, res) => {
   try {
-    const mods = await db.prepare('SELECT * FROM mods ORDER BY created_at DESC').all();
-    // Parse image_filename JSON
-    const parsed = mods.map(m => ({
-      ...m,
-      image_filename: m.image_filename ? JSON.parse(m.image_filename) : []
-    }));
-    res.json({ mods: parsed });
+    const mods = await Mod.find().sort({ createdAt: -1 });
+    res.json({ mods });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch mods' });
   }
@@ -60,9 +57,8 @@ router.get('/', async (req, res) => {
 // Get single mod (public)
 router.get('/:id', async (req, res) => {
   try {
-    const mod = await db.prepare('SELECT * FROM mods WHERE id = ?').get(req.params.id);
+    const mod = await Mod.findById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
-    mod.image_filename = mod.image_filename ? JSON.parse(mod.image_filename) : [];
     res.json({ mod });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch mod' });
@@ -79,13 +75,17 @@ router.post('/', authMiddleware, adminOnly, upload.fields([
     if (!title) return res.status(400).json({ error: 'Title is required' });
 
     const images = req.files?.images ? req.files.images.map(f => f.filename) : [];
-    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : null;
+    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : '';
 
-    const result = await db.prepare(
-      'INSERT INTO mods (title, description, size, image_filename, mod_filename) VALUES (?, ?, ?, ?, ?)'
-    ).run(title.trim(), description || '', size || '', JSON.stringify(images), modFile);
+    const mod = await Mod.create({
+      title: title.trim(),
+      description: description || '',
+      size: size || '',
+      imageFilename: images,
+      modFilename: modFile
+    });
 
-    res.status(201).json({ message: 'Mod created', id: result.lastInsertRowid });
+    res.status(201).json({ message: 'Mod created', id: mod._id });
   } catch (err) {
     console.error('Create mod error:', err.message);
     res.status(500).json({ error: 'Failed to create mod' });
@@ -98,15 +98,20 @@ router.put('/:id', authMiddleware, adminOnly, upload.fields([
   { name: 'mod_file', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const mod = await db.prepare('SELECT * FROM mods WHERE id = ?').get(req.params.id);
+    const mod = await Mod.findById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
     const { title, description, size } = req.body;
-    const images = req.files?.images ? req.files.images.map(f => f.filename) : JSON.parse(mod.image_filename || '[]');
-    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : mod.mod_filename;
+    const images = req.files?.images ? req.files.images.map(f => f.filename) : mod.imageFilename;
+    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : mod.modFilename;
 
-    await db.prepare('UPDATE mods SET title=?, description=?, size=?, image_filename=?, mod_filename=? WHERE id=?')
-      .run(title || mod.title, description || mod.description, size || mod.size, JSON.stringify(images), modFile, req.params.id);
+    await Mod.findByIdAndUpdate(req.params.id, {
+      title: title || mod.title,
+      description: description || mod.description,
+      size: size || mod.size,
+      imageFilename: images,
+      modFilename: modFile
+    });
 
     res.json({ message: 'Mod updated' });
   } catch (err) {
@@ -117,22 +122,25 @@ router.put('/:id', authMiddleware, adminOnly, upload.fields([
 // Delete mod (admin only)
 router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const mod = await db.prepare('SELECT * FROM mods WHERE id = ?').get(req.params.id);
+    const mod = await Mod.findById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
     // Delete associated files
-    if (mod.image_filename) {
-      JSON.parse(mod.image_filename).forEach(f => {
+    if (mod.imageFilename && mod.imageFilename.length) {
+      mod.imageFilename.forEach(f => {
         const fp = path.join(__dirname, '..', 'uploads', 'images', f);
         if (fs.existsSync(fp)) fs.unlinkSync(fp);
       });
     }
-    if (mod.mod_filename) {
-      const fp = path.join(__dirname, '..', 'uploads', 'mods', mod.mod_filename);
+    if (mod.modFilename) {
+      const fp = path.join(__dirname, '..', 'uploads', 'mods', mod.modFilename);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
     }
 
-    await db.prepare('DELETE FROM mods WHERE id = ?').run(req.params.id);
+    await Mod.findByIdAndDelete(req.params.id);
+    await Comment.deleteMany({ modId: req.params.id });
+    await Rating.deleteMany({ modId: req.params.id });
+
     res.json({ message: 'Mod deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete mod' });
@@ -142,7 +150,7 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 // Download counter
 router.post('/:id/download', async (req, res) => {
   try {
-    await db.prepare('UPDATE mods SET downloads = downloads + 1 WHERE id = ?').run(req.params.id);
+    await Mod.findByIdAndUpdate(req.params.id, { $inc: { downloads: 1 } });
     res.json({ message: 'Count updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed' });
@@ -152,13 +160,13 @@ router.post('/:id/download', async (req, res) => {
 // Download mod file
 router.get('/:id/file', async (req, res) => {
   try {
-    const mod = await db.prepare('SELECT mod_filename, title FROM mods WHERE id = ?').get(req.params.id);
-    if (!mod || !mod.mod_filename) return res.status(404).json({ error: 'File not found' });
+    const mod = await Mod.findById(req.params.id);
+    if (!mod || !mod.modFilename) return res.status(404).json({ error: 'File not found' });
 
-    const filePath = path.join(__dirname, '..', 'uploads', 'mods', mod.mod_filename);
+    const filePath = path.join(__dirname, '..', 'uploads', 'mods', mod.modFilename);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on server' });
 
-    res.download(filePath, `${mod.title.replace(/[^a-z0-9]/gi, '_')}_${mod.mod_filename}`);
+    res.download(filePath, `${mod.title.replace(/[^a-z0-9]/gi, '_')}_${mod.modFilename}`);
   } catch (err) {
     res.status(500).json({ error: 'Download failed' });
   }
@@ -167,7 +175,7 @@ router.get('/:id/file', async (req, res) => {
 // Get comments for mod
 router.get('/:id/comments', async (req, res) => {
   try {
-    const comments = await db.prepare('SELECT * FROM comments WHERE mod_id = ? ORDER BY created_at DESC').all(req.params.id);
+    const comments = await Comment.find({ modId: req.params.id }).sort({ createdAt: -1 });
     res.json({ comments });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch comments' });
@@ -180,13 +188,17 @@ router.post('/:id/comments', authMiddleware, contentLimiter, async (req, res) =>
     const { content } = req.body;
     if (!content || !content.trim()) return res.status(400).json({ error: 'Comment is required' });
 
-    const mod = await db.prepare('SELECT id FROM mods WHERE id = ?').get(req.params.id);
+    const mod = await Mod.findById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
-    const result = await db.prepare('INSERT INTO comments (mod_id, user_id, username, content) VALUES (?, ?, ?, ?)')
-      .run(req.params.id, req.user.id, req.user.username, content.trim().slice(0, 300));
+    const comment = await Comment.create({
+      modId: req.params.id,
+      userId: req.user.id,
+      username: req.user.username,
+      content: content.trim().slice(0, 300)
+    });
 
-    res.status(201).json({ message: 'Comment posted', id: result.lastInsertRowid });
+    res.status(201).json({ message: 'Comment posted', id: comment._id });
   } catch (err) {
     res.status(500).json({ error: 'Failed to post comment' });
   }
@@ -195,14 +207,14 @@ router.post('/:id/comments', authMiddleware, contentLimiter, async (req, res) =>
 // Delete comment (admin or owner)
 router.delete('/:modId/comments/:commentId', authMiddleware, async (req, res) => {
   try {
-    const comment = await db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.commentId);
+    const comment = await Comment.findById(req.params.commentId);
     if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
-    if (req.user.role !== 'admin' && req.user.id !== comment.user_id) {
+    if (req.user.role !== 'admin' && req.user.id !== comment.userId.toString()) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    await db.prepare('DELETE FROM comments WHERE id = ?').run(req.params.commentId);
+    await Comment.findByIdAndDelete(req.params.commentId);
     res.json({ message: 'Comment deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete comment' });
@@ -212,9 +224,14 @@ router.delete('/:modId/comments/:commentId', authMiddleware, async (req, res) =>
 // Get ratings for mod
 router.get('/:id/ratings', async (req, res) => {
   try {
-    const ratings = await db.prepare('SELECT * FROM ratings WHERE mod_id = ? ORDER BY created_at DESC').all(req.params.id);
-    const stats = await db.prepare('SELECT AVG(stars) as avg, COUNT(*) as count FROM ratings WHERE mod_id = ?').get(req.params.id);
-    res.json({ ratings, avg: stats.avg || 0, count: stats.count });
+    const ratings = await Rating.find({ modId: req.params.id }).sort({ createdAt: -1 });
+    const stats = await Rating.aggregate([
+      { $match: { modId: require('mongoose').Types.ObjectId.createFromHexString(req.params.id) } },
+      { $group: { _id: null, avg: { $avg: '$stars' }, count: { $sum: 1 } } }
+    ]);
+    const avg = stats.length ? Math.round(stats[0].avg * 10) / 10 : 0;
+    const count = stats.length ? stats[0].count : 0;
+    res.json({ ratings, avg, count });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch ratings' });
   }
@@ -226,22 +243,25 @@ router.post('/:id/ratings', authMiddleware, contentLimiter, async (req, res) => 
     const { stars, comment } = req.body;
     if (!stars || stars < 1 || stars > 5) return res.status(400).json({ error: 'Stars must be 1-5' });
 
-    const mod = await db.prepare('SELECT id FROM mods WHERE id = ?').get(req.params.id);
+    const mod = await Mod.findById(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
     // Upsert rating
-    const existing = await db.prepare('SELECT id FROM ratings WHERE mod_id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const existing = await Rating.findOne({ modId: req.params.id, userId: req.user.id });
     if (existing) {
-      await db.prepare('UPDATE ratings SET stars = ?, comment = ? WHERE id = ?').run(stars, comment || null, existing.id);
+      await Rating.findByIdAndUpdate(existing._id, { stars, comment: comment || '' });
     } else {
-      await db.prepare('INSERT INTO ratings (mod_id, user_id, stars, comment) VALUES (?, ?, ?, ?)')
-        .run(req.params.id, req.user.id, stars, comment || null);
+      await Rating.create({ modId: req.params.id, userId: req.user.id, stars, comment: comment || '' });
     }
 
     // Update mod rating stats
-    const stats = await db.prepare('SELECT AVG(stars) as avg, COUNT(*) as count FROM ratings WHERE mod_id = ?').get(req.params.id);
-    await db.prepare('UPDATE mods SET rating_avg = ?, rating_count = ? WHERE id = ?')
-      .run(Math.round(stats.avg * 10) / 10, stats.count, req.params.id);
+    const stats = await Rating.aggregate([
+      { $match: { modId: require('mongoose').Types.ObjectId.createFromHexString(req.params.id) } },
+      { $group: { _id: null, avg: { $avg: '$stars' }, count: { $sum: 1 } } }
+    ]);
+    const avg = stats.length ? Math.round(stats[0].avg * 10) / 10 : 0;
+    const count = stats.length ? stats[0].count : 0;
+    await Mod.findByIdAndUpdate(req.params.id, { ratingAvg: avg, ratingCount: count });
 
     res.json({ message: 'Rating saved' });
   } catch (err) {

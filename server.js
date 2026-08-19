@@ -89,26 +89,6 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Seed admin - ensures admin user exists (safe to call multiple times)
-app.get('/api/seed', async (req, res) => {
-  const bcrypt = require('bcryptjs');
-  const db = require('./database');
-  try {
-    const existing = await db.prepare("SELECT id FROM users WHERE email = ?").get('duabua1@gmail.com');
-    if (existing) {
-      return res.json({ message: 'Admin already exists', id: existing.id });
-    }
-    const hash = bcrypt.hashSync('admin123', 12);
-    const result = await db.prepare(
-      "INSERT INTO users (username, email, password, role, email_verified) VALUES (?, ?, ?, ?, ?)"
-    ).run('Admin', 'duabua1@gmail.com', hash, 'admin', 1);
-    res.json({ message: 'Admin created', id: result.lastInsertRowid });
-  } catch (err) {
-    console.error('[SEED] Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ===== BACKUP SYSTEM =====
 
 const backupDir = process.env.BACKUP_DIR || path.join(__dirname, 'backups');

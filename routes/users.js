@@ -1,5 +1,8 @@
 const express = require('express');
-const db = require('../database');
+const User = require('../models/User');
+const Comment = require('../models/Comment');
+const Rating = require('../models/Rating');
+const Suggestion = require('../models/Suggestion');
 const { authMiddleware, adminOnly } = require('../middleware/auth');
 
 const router = express.Router();
@@ -7,7 +10,7 @@ const router = express.Router();
 // Get all users (admin only)
 router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const users = await db.prepare('SELECT id, username, email, role, email_verified, created_at FROM users ORDER BY created_at DESC').all();
+    const users = await User.find().select('username email role emailVerified createdAt').sort({ createdAt: -1 });
     res.json({ users });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch users' });
@@ -17,7 +20,7 @@ router.get('/', authMiddleware, adminOnly, async (req, res) => {
 // Get single user (admin only)
 router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const user = await db.prepare('SELECT id, username, email, role, email_verified, created_at FROM users WHERE id = ?').get(req.params.id);
+    const user = await User.findById(req.params.id).select('username email role emailVerified createdAt');
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
   } catch (err) {
@@ -28,14 +31,23 @@ router.get('/:id', authMiddleware, adminOnly, async (req, res) => {
 // Delete user (admin only, cannot delete self)
 router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    if (parseInt(req.params.id) === req.user.id) {
+    if (req.params.id === req.user.id) {
       return res.status(400).json({ error: 'Cannot delete yourself' });
     }
 
-    const user = await db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+    const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    await db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+    // Prevent deleting the super admin
+    if (user.email === 'duabua1@gmail.com') {
+      return res.status(400).json({ error: 'Cannot delete the main admin' });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
+    await Comment.deleteMany({ userId: req.params.id });
+    await Rating.deleteMany({ userId: req.params.id });
+    await Suggestion.deleteMany({ userId: req.params.id });
+
     res.json({ message: 'User deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete user' });

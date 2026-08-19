@@ -2,7 +2,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const db = require('../database');
+const User = require('../models/User');
+const VerificationCode = require('../models/VerificationCode');
 const { authLimiter } = require('../middleware/security');
 const emailService = require('../services/email');
 
@@ -21,38 +22,29 @@ router.post('/register', authLimiter, async (req, res) => {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Sanitize
     username = username.trim().slice(0, 30);
     email = email.trim().toLowerCase();
 
-    // Validate email format
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // Validate password strength
     if (password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    // Check if user exists
-    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existing = await User.findOne({ email });
     if (existing) {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
-    // Hash password
     const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS || 12);
     const hashedPassword = bcrypt.hashSync(password, saltRounds);
 
-    // Create user
-    const result = await db.prepare('INSERT INTO users (username, email, password) VALUES (?, ?, ?)').run(
-      username, email, hashedPassword
-    );
+    const user = await User.create({ username, email, password: hashedPassword });
 
-    // Generate token
     const token = jwt.sign(
-      { id: result.lastInsertRowid, role: 'user' },
+      { id: user._id, role: user.role },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES }
     );
@@ -60,7 +52,7 @@ router.post('/register', authLimiter, async (req, res) => {
     res.status(201).json({
       message: 'Account created',
       token,
-      user: { id: result.lastInsertRowid, username, email, role: 'user' }
+      user: { id: user._id, username: user.username, email: user.email, role: user.role }
     });
   } catch (err) {
     console.error('Register error:', err.message);
@@ -79,48 +71,45 @@ router.post('/login', authLimiter, async (req, res) => {
 
     email = email.trim().toLowerCase();
 
-    const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if locked
-    if (user.locked_until && new Date(user.locked_until) > new Date()) {
-      const remaining = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const remaining = Math.ceil((user.lockedUntil - new Date()) / 60000);
       return res.status(423).json({ error: `Account locked. Try again in ${remaining} minutes` });
     }
 
     // Verify password
     if (!bcrypt.compareSync(password, user.password)) {
-      const attempts = user.failed_login_attempts + 1;
+      const attempts = user.failedLoginAttempts + 1;
       let lockedUntil = null;
 
       if (attempts >= MAX_ATTEMPTS) {
-        lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString();
-        await db.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?')
-          .run(attempts, lockedUntil, user.id);
+        lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000);
+        await User.findByIdAndUpdate(user._id, { failedLoginAttempts: attempts, lockedUntil });
         return res.status(423).json({ error: `Account locked for ${LOCKOUT_MINUTES} minutes` });
       }
 
-      await db.prepare('UPDATE users SET failed_login_attempts = ? WHERE id = ?').run(attempts, user.id);
+      await User.findByIdAndUpdate(user._id, { failedLoginAttempts: attempts });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Reset attempts on success
-    await db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
+    await User.findByIdAndUpdate(user._id, { failedLoginAttempts: 0, lockedUntil: null });
 
     // Generate login verification code
     const code = crypto.randomInt(100000, 999999).toString();
     const codeHash = bcrypt.hashSync(code, 10);
 
-    // Delete old codes for this email
-    await db.prepare('DELETE FROM verification_codes WHERE email = ? AND code LIKE ?').run(email, 'login_%');
+    // Delete old login codes for this email
+    await VerificationCode.deleteMany({ email, code: { $regex: /^login_/ } });
 
-    // Store hashed code with 10 minute expiry, prefixed with 'login_' to distinguish
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    await db.prepare('INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)').run(
-      email, 'login_' + codeHash, expiresAt
-    );
+    // Store hashed code with 10 minute expiry, prefixed with 'login_'
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await VerificationCode.create({ email, code: 'login_' + codeHash, expiresAt });
 
     // Send code via email
     try {
@@ -152,16 +141,18 @@ router.post('/verify-login', authLimiter, async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
 
     // Find valid login verification code
-    const verification = await db.prepare(
-      "SELECT * FROM verification_codes WHERE email = ? AND code LIKE 'login_%' AND used = 0 ORDER BY created_at DESC LIMIT 1"
-    ).get(normalizedEmail);
+    const verification = await VerificationCode.findOne({
+      email: normalizedEmail,
+      code: { $regex: /^login_/ },
+      used: false
+    }).sort({ createdAt: -1 });
 
     if (!verification) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
 
     // Check expiry
-    if (new Date(verification.expires_at) < new Date()) {
+    if (verification.expiresAt < new Date()) {
       return res.status(400).json({ error: 'Code expired. Login again.' });
     }
 
@@ -173,17 +164,17 @@ router.post('/verify-login', authLimiter, async (req, res) => {
     }
 
     // Mark code as used
-    await db.prepare('UPDATE verification_codes SET used = 1 WHERE id = ?').run(verification.id);
+    await VerificationCode.findByIdAndUpdate(verification._id, { used: true });
 
     // Get user
-    const user = await db.prepare('SELECT id, username, email, role FROM users WHERE email = ?').get(normalizedEmail);
+    const user = await User.findOne({ email: normalizedEmail }).select('username email role');
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
 
     // Generate token
     const token = jwt.sign(
-      { id: user.id, role: user.role },
+      { id: user._id, role: user.role },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES }
     );
@@ -191,7 +182,7 @@ router.post('/verify-login', authLimiter, async (req, res) => {
     res.json({
       message: 'Login successful',
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+      user: { id: user._id, username: user.username, email: user.email, role: user.role }
     });
   } catch (err) {
     console.error('Verify login error:', err.message);
@@ -201,7 +192,7 @@ router.post('/verify-login', authLimiter, async (req, res) => {
 
 // Get current user
 router.get('/me', require('../middleware/auth').authMiddleware, async (req, res) => {
-  const user = await db.prepare('SELECT id, username, email, role, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = await User.findById(req.user.id).select('username email role createdAt');
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user });
 });
@@ -214,35 +205,23 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
 
     email = email.trim().toLowerCase();
 
-    // Always return success to prevent email enumeration
-    const user = await db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-
+    const user = await User.findOne({ email });
     if (!user) {
-      // Still return success to prevent email enumeration
       return res.json({ message: 'If the email exists, a code has been sent' });
     }
 
-    // Generate secure 6-digit code using crypto
     const code = crypto.randomInt(100000, 999999).toString();
-
-    // Hash the code before storing
     const codeHash = bcrypt.hashSync(code, 10);
 
-    // Delete old codes for this email
-    await db.prepare('DELETE FROM verification_codes WHERE email = ?').run(email);
+    await VerificationCode.deleteMany({ email });
 
-    // Store hashed code with 15 minute expiry
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    await db.prepare('INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)').run(
-      email, codeHash, expiresAt
-    );
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await VerificationCode.create({ email, code: codeHash, expiresAt });
 
-    // Send email via Brevo
     try {
       await emailService.sendPasswordResetCode(email, code);
     } catch (emailErr) {
       console.error('[PASSWORD RESET] Email send failed:', emailErr.message);
-      // Still return success to prevent email enumeration
     }
 
     res.json({ message: 'If the email exists, a code has been sent' });
@@ -267,36 +246,33 @@ router.post('/reset-password', authLimiter, async (req, res) => {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Find valid verification code
-    const verification = await db.prepare(
-      'SELECT * FROM verification_codes WHERE email = ? AND used = 0 ORDER BY created_at DESC LIMIT 1'
-    ).get(normalizedEmail);
+    const verification = await VerificationCode.findOne({
+      email: normalizedEmail,
+      used: false
+    }).sort({ createdAt: -1 });
 
     if (!verification) {
       return res.status(400).json({ error: 'Invalid or expired code' });
     }
 
-    // Check expiry
-    if (new Date(verification.expires_at) < new Date()) {
+    if (verification.expiresAt < new Date()) {
       return res.status(400).json({ error: 'Code expired. Request a new one.' });
     }
 
-    // Verify code against hash
     const codeValid = bcrypt.compareSync(code, verification.code);
     if (!codeValid) {
       return res.status(400).json({ error: 'Invalid code' });
     }
 
-    // Mark code as used
-    await db.prepare('UPDATE verification_codes SET used = 1 WHERE id = ?').run(verification.id);
+    await VerificationCode.findByIdAndUpdate(verification._id, { used: true });
 
-    // Hash new password
     const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS || 12);
     const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
 
-    // Update password and reset failed attempts
-    await db.prepare('UPDATE users SET password = ?, failed_login_attempts = 0, locked_until = NULL WHERE email = ?')
-      .run(hashedPassword, normalizedEmail);
+    await User.findOneAndUpdate(
+      { email: normalizedEmail },
+      { password: hashedPassword, failedLoginAttempts: 0, lockedUntil: null }
+    );
 
     res.json({ message: 'Password reset successfully' });
   } catch (err) {
