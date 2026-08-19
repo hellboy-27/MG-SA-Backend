@@ -13,7 +13,7 @@ const MAX_ATTEMPTS = parseInt(process.env.MAX_LOGIN_ATTEMPTS || 5);
 const LOCKOUT_MINUTES = parseInt(process.env.LOGIN_LOCKOUT_MINUTES || 30);
 
 // Register
-router.post('/register', authLimiter, (req, res) => {
+router.post('/register', authLimiter, async (req, res) => {
   try {
     let { username, email, password } = req.body;
 
@@ -36,7 +36,7 @@ router.post('/register', authLimiter, (req, res) => {
     }
 
     // Check if user exists
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (existing) {
       return res.status(409).json({ error: 'Email already registered' });
     }
@@ -46,7 +46,7 @@ router.post('/register', authLimiter, (req, res) => {
     const hashedPassword = bcrypt.hashSync(password, saltRounds);
 
     // Create user
-    const result = db.prepare('INSERT INTO users (username, email, password) VALUES (?, ?, ?)').run(
+    const result = await db.prepare('INSERT INTO users (username, email, password) VALUES (?, ?, ?)').run(
       username, email, hashedPassword
     );
 
@@ -69,7 +69,7 @@ router.post('/register', authLimiter, (req, res) => {
 });
 
 // Login
-router.post('/login', authLimiter, (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     let { email, password } = req.body;
 
@@ -79,7 +79,7 @@ router.post('/login', authLimiter, (req, res) => {
 
     email = email.trim().toLowerCase();
 
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -97,17 +97,17 @@ router.post('/login', authLimiter, (req, res) => {
 
       if (attempts >= MAX_ATTEMPTS) {
         lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString();
-        db.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?')
+        await db.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?')
           .run(attempts, lockedUntil, user.id);
         return res.status(423).json({ error: `Account locked for ${LOCKOUT_MINUTES} minutes` });
       }
 
-      db.prepare('UPDATE users SET failed_login_attempts = ? WHERE id = ?').run(attempts, user.id);
+      await db.prepare('UPDATE users SET failed_login_attempts = ? WHERE id = ?').run(attempts, user.id);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Reset attempts on success
-    db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
+    await db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
 
     const token = jwt.sign(
       { id: user.id, role: user.role },
@@ -127,8 +127,8 @@ router.post('/login', authLimiter, (req, res) => {
 });
 
 // Get current user
-router.get('/me', require('../middleware/auth').authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, username, email, role, created_at FROM users WHERE id = ?').get(req.user.id);
+router.get('/me', require('../middleware/auth').authMiddleware, async (req, res) => {
+  const user = await db.prepare('SELECT id, username, email, role, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user });
 });
@@ -142,7 +142,7 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
     email = email.trim().toLowerCase();
 
     // Always return success to prevent email enumeration
-    const user = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const user = await db.prepare('SELECT id FROM users WHERE email = ?').get(email);
 
     if (!user) {
       // Still return success to prevent email enumeration
@@ -156,11 +156,11 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
     const codeHash = bcrypt.hashSync(code, 10);
 
     // Delete old codes for this email
-    db.prepare('DELETE FROM verification_codes WHERE email = ?').run(email);
+    await db.prepare('DELETE FROM verification_codes WHERE email = ?').run(email);
 
     // Store hashed code with 15 minute expiry
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    db.prepare('INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)').run(
+    await db.prepare('INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)').run(
       email, codeHash, expiresAt
     );
 
@@ -180,7 +180,7 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
 });
 
 // Reset password with verification code
-router.post('/reset-password', authLimiter, (req, res) => {
+router.post('/reset-password', authLimiter, async (req, res) => {
   try {
     const { email, code, newPassword } = req.body;
 
@@ -195,7 +195,7 @@ router.post('/reset-password', authLimiter, (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
 
     // Find valid verification code
-    const verification = db.prepare(
+    const verification = await db.prepare(
       'SELECT * FROM verification_codes WHERE email = ? AND used = 0 ORDER BY created_at DESC LIMIT 1'
     ).get(normalizedEmail);
 
@@ -215,14 +215,14 @@ router.post('/reset-password', authLimiter, (req, res) => {
     }
 
     // Mark code as used
-    db.prepare('UPDATE verification_codes SET used = 1 WHERE id = ?').run(verification.id);
+    await db.prepare('UPDATE verification_codes SET used = 1 WHERE id = ?').run(verification.id);
 
     // Hash new password
     const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS || 12);
     const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
 
     // Update password and reset failed attempts
-    db.prepare('UPDATE users SET password = ?, failed_login_attempts = 0, locked_until = NULL WHERE email = ?')
+    await db.prepare('UPDATE users SET password = ?, failed_login_attempts = 0, locked_until = NULL WHERE email = ?')
       .run(hashedPassword, normalizedEmail);
 
     res.json({ message: 'Password reset successfully' });

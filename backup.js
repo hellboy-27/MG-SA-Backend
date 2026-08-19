@@ -1,13 +1,13 @@
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const archiver = require('archiver');
 
 class BackupManager {
-  constructor(dbPath, backupDir) {
-    this.dbPath = dbPath;
+  constructor(backupDir) {
     this.backupDir = backupDir;
-    this.maxBackups = 14; // Keep 14 backups (7 days x 2 daily)
-    
+    this.maxBackups = 14;
+
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
     }
@@ -17,32 +17,47 @@ class BackupManager {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupName = `backup-${timestamp}.zip`;
     const backupPath = path.join(this.backupDir, backupName);
+    const dumpFile = path.join(this.backupDir, `dump-${timestamp}.sql`);
 
     return new Promise((resolve, reject) => {
-      const output = fs.createWriteStream(backupPath);
-      const archive = archiver('zip', { zlib: { level: 9 } });
+      try {
+        // Export PostgreSQL data to SQL file
+        const dbUrl = process.env.DATABASE_URL;
+        if (!dbUrl) {
+          console.log('[BACKUP] No DATABASE_URL, skipping');
+          return resolve(null);
+        }
 
-      output.on('close', () => {
-        console.log(`[BACKUP] Created: ${backupName} (${archive.pointer()} bytes)`);
-        this.cleanOldBackups();
-        resolve(backupPath);
-      });
+        try {
+          execSync(`pg_dump "${dbUrl}" > "${dumpFile}"`, { timeout: 30000 });
+        } catch (dumpErr) {
+          console.error('[BACKUP] pg_dump failed:', dumpErr.message);
+          return resolve(null);
+        }
 
-      archive.on('error', reject);
-      archive.pipe(output);
+        const output = fs.createWriteStream(backupPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
 
-      // Add database file
-      if (fs.existsSync(this.dbPath)) {
-        archive.file(this.dbPath, { name: 'database.db' });
+        output.on('close', () => {
+          console.log(`[BACKUP] Created: ${backupName} (${archive.pointer()} bytes)`);
+          // Clean up SQL dump file
+          if (fs.existsSync(dumpFile)) fs.unlinkSync(dumpFile);
+          this.cleanOldBackups();
+          resolve(backupPath);
+        });
+
+        archive.on('error', reject);
+        archive.pipe(output);
+
+        if (fs.existsSync(dumpFile)) {
+          archive.file(dumpFile, { name: 'database.sql' });
+        }
+
+        archive.finalize();
+      } catch (err) {
+        console.error('[BACKUP] Error:', err.message);
+        reject(err);
       }
-
-      // Add WAL and SHM files if they exist
-      const walPath = this.dbPath + '-wal';
-      const shmPath = this.dbPath + '-shm';
-      if (fs.existsSync(walPath)) archive.file(walPath, { name: 'database.db-wal' });
-      if (fs.existsSync(shmPath)) archive.file(shmPath, { name: 'database.db-shm' });
-
-      archive.finalize();
     });
   }
 

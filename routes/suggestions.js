@@ -6,14 +6,14 @@ const { contentLimiter } = require('../middleware/security');
 const router = express.Router();
 
 // Submit suggestion (authenticated users only)
-router.post('/', authMiddleware, contentLimiter, (req, res) => {
+router.post('/', authMiddleware, contentLimiter, async (req, res) => {
   try {
     const { message } = req.body;
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    const result = db.prepare('INSERT INTO suggestions (user_id, username, message) VALUES (?, ?, ?)').run(
+    const result = await db.prepare('INSERT INTO suggestions (user_id, username, message) VALUES (?, ?, ?)').run(
       req.user.id,
       req.user.username,
       message.trim().slice(0, 500)
@@ -26,9 +26,9 @@ router.post('/', authMiddleware, contentLimiter, (req, res) => {
 });
 
 // Get all suggestions (admin only)
-router.get('/', authMiddleware, adminOnly, (req, res) => {
+router.get('/', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const suggestions = db.prepare('SELECT * FROM suggestions ORDER BY created_at DESC').all();
+    const suggestions = await db.prepare('SELECT * FROM suggestions ORDER BY created_at DESC').all();
     res.json({ suggestions });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch suggestions' });
@@ -36,9 +36,9 @@ router.get('/', authMiddleware, adminOnly, (req, res) => {
 });
 
 // Mark as read (admin only)
-router.post('/:id/read', authMiddleware, adminOnly, (req, res) => {
+router.post('/:id/read', authMiddleware, adminOnly, async (req, res) => {
   try {
-    db.prepare("UPDATE suggestions SET status = 'read' WHERE id = ?").run(req.params.id);
+    await db.prepare("UPDATE suggestions SET status = 'read' WHERE id = ?").run(req.params.id);
     res.json({ message: 'Marked as read' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update' });
@@ -46,9 +46,9 @@ router.post('/:id/read', authMiddleware, adminOnly, (req, res) => {
 });
 
 // Delete suggestion (admin only)
-router.delete('/:id', authMiddleware, adminOnly, (req, res) => {
+router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    db.prepare('DELETE FROM suggestions WHERE id = ?').run(req.params.id);
+    await db.prepare('DELETE FROM suggestions WHERE id = ?').run(req.params.id);
     res.json({ message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete' });

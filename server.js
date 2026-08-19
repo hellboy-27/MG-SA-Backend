@@ -14,9 +14,8 @@ const BackupManager = require('./backup');
 const uploadsDir = path.join(__dirname, 'uploads');
 const imagesDir = path.join(uploadsDir, 'images');
 const modsDir = path.join(uploadsDir, 'mods');
-const dataDir = path.join(__dirname, 'data');
 
-[uploadsDir, imagesDir, modsDir, dataDir].forEach(dir => {
+[uploadsDir, imagesDir, modsDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -92,9 +91,8 @@ app.get('/api/health', (req, res) => {
 
 // ===== BACKUP SYSTEM =====
 
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'database.db');
 const backupDir = process.env.BACKUP_DIR || path.join(__dirname, 'backups');
-const backupManager = new BackupManager(dbPath, backupDir);
+const backupManager = new BackupManager(backupDir);
 
 // Backup every 12 hours
 const backupInterval = parseInt(process.env.BACKUP_INTERVAL_HOURS || 12);

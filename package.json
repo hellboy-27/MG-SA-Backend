@@ -4,16 +4,15 @@
   "description": "MG-SA Definitive Mods Backend",
   "main": "server.js",
   "engines": {
-    "node": ">=20.0.0 <23.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "install": "npm install better-sqlite3"
+    "dev": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.0",
-    "better-sqlite3": "^11.7.0",
+    "pg": "^8.13.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
