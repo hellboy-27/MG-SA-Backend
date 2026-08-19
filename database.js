@@ -108,21 +108,28 @@ async function initDB() {
 initDB();
 
 // Helper methods that mimic better-sqlite3 API for easier migration
+// Converts ? placeholders to $1, $2, ... for PostgreSQL
+function convertPlaceholders(sql) {
+  let idx = 0;
+  return sql.replace(/\?/g, () => `$${++idx}`);
+}
+
 const db = {
   prepare(sql) {
+    const pgSql = convertPlaceholders(sql);
     return {
       get(...params) {
-        return pool.query(sql, params).then(r => r.rows[0] || undefined);
+        return pool.query(pgSql, params).then(r => r.rows[0] || undefined);
       },
       all(...params) {
-        return pool.query(sql, params).then(r => r.rows);
+        return pool.query(pgSql, params).then(r => r.rows);
       },
       run(...params) {
         // For INSERT, add RETURNING id if not present
-        let execSql = sql;
+        let execSql = pgSql;
         let returnId = false;
-        if (sql.trim().toUpperCase().startsWith('INSERT') && !sql.includes('RETURNING')) {
-          execSql = sql + ' RETURNING id';
+        if (sql.trim().toUpperCase().startsWith('INSERT') && !sql.toUpperCase().includes('RETURNING')) {
+          execSql = pgSql + ' RETURNING id';
           returnId = true;
         }
         return pool.query(execSql, params).then(r => {
