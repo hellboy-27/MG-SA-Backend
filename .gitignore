@@ -1,0 +1,8 @@
+node_modules/
+.env
+uploads/
+backups/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
