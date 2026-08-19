@@ -109,6 +109,79 @@ router.post('/login', authLimiter, async (req, res) => {
     // Reset attempts on success
     await db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
 
+    // Generate login verification code
+    const code = crypto.randomInt(100000, 999999).toString();
+    const codeHash = bcrypt.hashSync(code, 10);
+
+    // Delete old codes for this email
+    await db.prepare('DELETE FROM verification_codes WHERE email = ? AND code LIKE ?').run(email, 'login_%');
+
+    // Store hashed code with 10 minute expiry, prefixed with 'login_' to distinguish
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await db.prepare('INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)').run(
+      email, 'login_' + codeHash, expiresAt
+    );
+
+    // Send code via email
+    try {
+      await emailService.sendPasswordResetCode(email, code);
+    } catch (emailErr) {
+      console.error('[LOGIN VERIFY] Email send failed:', emailErr.message);
+    }
+
+    res.json({
+      requiresVerification: true,
+      email: email,
+      message: 'Verification code sent to your email'
+    });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Verify login code and return token
+router.post('/verify-login', authLimiter, async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ error: 'Email and code are required' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Find valid login verification code
+    const verification = await db.prepare(
+      "SELECT * FROM verification_codes WHERE email = ? AND code LIKE 'login_%' AND used = 0 ORDER BY created_at DESC LIMIT 1"
+    ).get(normalizedEmail);
+
+    if (!verification) {
+      return res.status(400).json({ error: 'Invalid or expired code' });
+    }
+
+    // Check expiry
+    if (new Date(verification.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Code expired. Login again.' });
+    }
+
+    // Verify code against hash (strip 'login_' prefix)
+    const storedHash = verification.code.replace('login_', '');
+    const codeValid = bcrypt.compareSync(code, storedHash);
+    if (!codeValid) {
+      return res.status(400).json({ error: 'Invalid code' });
+    }
+
+    // Mark code as used
+    await db.prepare('UPDATE verification_codes SET used = 1 WHERE id = ?').run(verification.id);
+
+    // Get user
+    const user = await db.prepare('SELECT id, username, email, role FROM users WHERE email = ?').get(normalizedEmail);
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    // Generate token
     const token = jwt.sign(
       { id: user.id, role: user.role },
       JWT_SECRET,
@@ -121,8 +194,8 @@ router.post('/login', authLimiter, async (req, res) => {
       user: { id: user.id, username: user.username, email: user.email, role: user.role }
     });
   } catch (err) {
-    console.error('Login error:', err.message);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('Verify login error:', err.message);
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 
