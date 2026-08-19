@@ -4,10 +4,21 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const fs = require('fs');
 const cron = require('node-cron');
 
 const { apiLimiter, xssProtection, securityHeaders } = require('./middleware/security');
 const BackupManager = require('./backup');
+
+// Create upload directories if they don't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+const imagesDir = path.join(uploadsDir, 'images');
+const modsDir = path.join(uploadsDir, 'mods');
+const dataDir = path.join(__dirname, 'data');
+
+[uploadsDir, imagesDir, modsDir, dataDir].forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
 
 const app = express();
 const PORT = process.env.PORT || 3001;
