@@ -149,6 +149,21 @@ router.post('/:id/download', (req, res) => {
   }
 });
 
+// Download mod file
+router.get('/:id/file', (req, res) => {
+  try {
+    const mod = db.prepare('SELECT mod_filename, title FROM mods WHERE id = ?').get(req.params.id);
+    if (!mod || !mod.mod_filename) return res.status(404).json({ error: 'File not found' });
+
+    const filePath = path.join(__dirname, '..', 'uploads', 'mods', mod.mod_filename);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on server' });
+
+    res.download(filePath, `${mod.title.replace(/[^a-z0-9]/gi, '_')}_${mod.mod_filename}`);
+  } catch (err) {
+    res.status(500).json({ error: 'Download failed' });
+  }
+});
+
 // Get comments for mod
 router.get('/:id/comments', (req, res) => {
   try {
