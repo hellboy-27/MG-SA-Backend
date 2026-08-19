@@ -3,22 +3,26 @@
   "version": "1.0.0",
   "description": "MG-SA Definitive Mods Backend",
   "main": "server.js",
+  "engines": {
+    "node": ">=20.0.0 <23.0.0"
+  },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "install": "npm install better-sqlite3"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "better-sqlite3": "^9.4.3",
+    "express": "^4.21.0",
+    "better-sqlite3": "^11.7.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
-    "helmet": "^7.1.0",
-    "express-rate-limit": "^7.1.5",
-    "express-validator": "^7.0.1",
-    "dotenv": "^16.3.1",
+    "helmet": "^8.0.0",
+    "express-rate-limit": "^7.4.0",
+    "express-validator": "^7.2.0",
+    "dotenv": "^16.4.5",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
-    "archiver": "^6.0.1"
+    "archiver": "^7.0.1"
   }
 }
