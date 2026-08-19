@@ -23,6 +23,9 @@ const dataDir = path.join(__dirname, 'data');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy (required for rate-limit behind Render/nginx)
+app.set('trust proxy', 1);
+
 // ===== SECURITY MIDDLEWARE =====
 
 // Helmet - security headers
