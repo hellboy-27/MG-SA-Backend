@@ -3,6 +3,14 @@ const bcrypt = require('bcryptjs');
 
 const MONGO_URI = process.env.MONGODB_URI || process.env.DATABASE_URL;
 
+mongoose.connection.on('error', (err) => {
+  console.error('[DB] Mongoose connection error:', err.message);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('[DB] Mongoose disconnected');
+});
+
 async function connectDB() {
   if (!MONGO_URI) {
     console.error('[DB] No MONGODB_URI or DATABASE_URL set');
@@ -11,9 +19,9 @@ async function connectDB() {
 
   try {
     console.log('[DB] Connecting to MongoDB...');
-    await mongoose.connect(MONGO_URI, {
-      dbName: 'mg-sa-db'
-    });
+    console.log('[DB] URI starts with:', MONGO_URI.substring(0, 20) + '...');
+    mongoose.set('debug', true);
+    await mongoose.connect(MONGO_URI);
     console.log('[DB] MongoDB connected successfully');
 
     // Create default admin if not exists
