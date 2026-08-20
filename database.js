@@ -19,9 +19,11 @@ async function connectDB() {
 
   try {
     console.log('[DB] Connecting to MongoDB...');
-    console.log('[DB] URI starts with:', MONGO_URI.substring(0, 20) + '...');
-    mongoose.set('debug', true);
-    await mongoose.connect(MONGO_URI);
+    console.log('[DB] URI starts with:', MONGO_URI.substring(0, 25) + '...');
+    await mongoose.connect(MONGO_URI, {
+      serverSelectionTimeoutMS: 5000,
+      heartbeatFrequencyMS: 10000
+    });
     console.log('[DB] MongoDB connected successfully');
 
     // Create default admin if not exists
@@ -40,7 +42,8 @@ async function connectDB() {
     }
   } catch (err) {
     console.error('[DB] Connection error:', err.message);
-    process.exit(1);
+    console.error('[DB] Full error:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
+    // Don't exit, let server run without DB for debugging
   }
 }
 
