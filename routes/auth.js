@@ -124,8 +124,8 @@ router.post('/login', authLimiter, async (req, res) => {
       message: 'Verification code sent to your email'
     });
   } catch (err) {
-    console.error('Login error:', err.message);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('Login error:', err.message, err.stack);
+    res.status(500).json({ error: 'Login failed', detail: err.message });
   }
 });
 

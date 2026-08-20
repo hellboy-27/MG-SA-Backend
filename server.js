@@ -89,6 +89,24 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Debug - check DB status (remove after debugging)
+app.get('/api/debug', async (req, res) => {
+  const mongoose = require('mongoose');
+  const User = require('./models/User');
+  try {
+    const userCount = await User.countDocuments();
+    const adminExists = await User.findOne({ email: 'duabua1@gmail.com' });
+    res.json({
+      mongoState: mongoose.connection.readyState,
+      mongoUri: process.env.MONGODB_URI ? 'SET' : 'NOT SET',
+      userCount,
+      adminExists: !!adminExists
+    });
+  } catch (err) {
+    res.json({ error: err.message, mongoState: mongoose.connection.readyState, mongoUri: process.env.MONGODB_URI ? 'SET' : 'NOT SET' });
+  }
+});
+
 // ===== BACKUP SYSTEM =====
 
 const backupDir = process.env.BACKUP_DIR || path.join(__dirname, 'backups');

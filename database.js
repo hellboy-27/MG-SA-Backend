@@ -10,10 +10,11 @@ async function connectDB() {
   }
 
   try {
+    console.log('[DB] Connecting to MongoDB...');
     await mongoose.connect(MONGO_URI, {
       dbName: 'mg-sa-db'
     });
-    console.log('[DB] MongoDB connected');
+    console.log('[DB] MongoDB connected successfully');
 
     // Create default admin if not exists
     const User = require('./models/User');
