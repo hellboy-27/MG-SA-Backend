@@ -159,17 +159,33 @@ app.use((req, res) => {
 
 // ===== START SERVER =====
 
-app.listen(PORT, () => {
-  console.log(`[SERVER] Running on port ${PORT}`);
-  console.log(`[SECURITY] Helmet, CORS, Rate Limit, XSS Protection enabled`);
-  console.log(`[BACKUP] Scheduled every ${backupInterval} hours`);
+const db = require('./database');
 
-  // Run initial backup
-  backupManager.createBackup().then(() => {
-    console.log('[BACKUP] Initial backup completed');
-  }).catch(err => {
-    console.error('[BACKUP] Initial backup failed:', err.message);
+// Wait for DB connection before starting server
+async function start() {
+  // Give mongoose time to connect
+  let retries = 10;
+  while (retries > 0) {
+    if (db.connection.readyState === 1) {
+      console.log('[SERVER] MongoDB connected, starting server...');
+      break;
+    }
+    console.log(`[SERVER] Waiting for MongoDB... (${retries})`);
+    await new Promise(r => setTimeout(r, 3000));
+    retries--;
+  }
+
+  if (db.connection.readyState !== 1) {
+    console.error('[SERVER] MongoDB failed to connect after 30s');
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[SERVER] Running on port ${PORT}`);
+    console.log(`[SECURITY] Helmet, CORS, Rate Limit, XSS Protection enabled`);
+    console.log(`[BACKUP] Scheduled every ${backupInterval} hours`);
   });
-});
+}
+
+start();
 
 module.exports = app;

@@ -30,8 +30,9 @@ async function connectDB() {
     const maskedUri = MONGO_URI.replace(/:([^@]+)@/, ':****@');
     console.log('[DB] URI:', maskedUri);
     await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 5000,
-      heartbeatFrequencyMS: 10000
+      serverSelectionTimeoutMS: 30000,
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 30000
     });
     console.log('[DB] MongoDB connected successfully');
 
@@ -51,8 +52,8 @@ async function connectDB() {
     }
   } catch (err) {
     console.error('[DB] Connection error:', err.message);
-    console.error('[DB] Full error:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
-    // Don't exit, let server run without DB for debugging
+    console.error('[DB] Error name:', err.name);
+    if (err.reason) console.error('[DB] Reason:', JSON.stringify(err.reason));
   }
 }
 
