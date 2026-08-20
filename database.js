@@ -11,6 +11,14 @@ mongoose.connection.on('disconnected', () => {
   console.log('[DB] Mongoose disconnected');
 });
 
+mongoose.connection.on('connected', () => {
+  console.log('[DB] Mongoose connected event fired');
+});
+
+mongoose.connection.on('open', () => {
+  console.log('[DB] Mongoose connection open');
+});
+
 async function connectDB() {
   if (!MONGO_URI) {
     console.error('[DB] No MONGODB_URI or DATABASE_URL set');
@@ -19,7 +27,8 @@ async function connectDB() {
 
   try {
     console.log('[DB] Connecting to MongoDB...');
-    console.log('[DB] URI starts with:', MONGO_URI.substring(0, 25) + '...');
+    const maskedUri = MONGO_URI.replace(/:([^@]+)@/, ':****@');
+    console.log('[DB] URI:', maskedUri);
     await mongoose.connect(MONGO_URI, {
       serverSelectionTimeoutMS: 5000,
       heartbeatFrequencyMS: 10000

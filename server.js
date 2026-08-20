@@ -93,17 +93,20 @@ app.get('/api/health', (req, res) => {
 app.get('/api/debug', async (req, res) => {
   const mongoose = require('mongoose');
   const User = require('./models/User');
+  const rawUri = process.env.MONGODB_URI || 'NOT SET';
   try {
     const userCount = await User.countDocuments();
     const adminExists = await User.findOne({ email: 'duabua1@gmail.com' });
     res.json({
       mongoState: mongoose.connection.readyState,
-      mongoUri: process.env.MONGODB_URI ? 'SET' : 'NOT SET',
+      mongoUriSet: rawUri !== 'NOT SET',
+      mongoUriStart: rawUri.substring(0, 30),
+      mongoUriEnd: rawUri.substring(rawUri.length - 30),
       userCount,
       adminExists: !!adminExists
     });
   } catch (err) {
-    res.json({ error: err.message, mongoState: mongoose.connection.readyState, mongoUri: process.env.MONGODB_URI ? 'SET' : 'NOT SET' });
+    res.json({ error: err.message, mongoState: mongoose.connection.readyState, mongoUriSet: rawUri !== 'NOT SET', mongoUriStart: rawUri.substring(0, 30), mongoUriEnd: rawUri.substring(rawUri.length - 30) });
   }
 });
 
