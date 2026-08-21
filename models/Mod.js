@@ -19,6 +19,9 @@ const modSchema = new mongoose.Schema({
       ret.mod_filename = ret.modFilename || '';
       ret.rating_avg = ret.ratingAvg || 0;
       ret.rating_count = ret.ratingCount || 0;
+      ret.avg_rating = ret.ratingAvg || 0;
+      ret.created_at = ret.createdAt;
+      ret.updated_at = ret.updatedAt;
       delete ret._id;
       delete ret.__v;
       delete ret.imageFilename;
@@ -26,6 +29,8 @@ const modSchema = new mongoose.Schema({
       delete ret.ratingAvg;
       delete ret.ratingCount;
       delete ret.modId;
+      delete ret.createdAt;
+      delete ret.updatedAt;
       return ret;
     }
   }
