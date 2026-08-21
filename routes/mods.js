@@ -28,7 +28,6 @@ const storage = multer.diskStorage({
 const fileFilter = (req, file, cb) => {
   const allowedImage = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
   const allowedMod = ['.zip', '.rar', '.7z'];
-
   if (file.fieldname === 'images') {
     cb(null, allowedImage.includes(path.extname(file.originalname).toLowerCase()));
   } else if (file.fieldname === 'mod_file') {
@@ -38,16 +37,33 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 100 * 1024 * 1024 }
-});
+const upload = multer({ storage, fileFilter, limits: { fileSize: 100 * 1024 * 1024 } });
+
+function formatSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+async function getNextModId() {
+  const last = await Mod.findOne().sort({ modId: -1 });
+  return (last ? last.modId : 0) + 1;
+}
+
+// Find mod by sequential modId or MongoDB _id
+async function findMod(id) {
+  const numId = parseInt(id);
+  if (!isNaN(numId)) {
+    return await Mod.findOne({ modId: numId });
+  }
+  return await Mod.findById(id);
+}
 
 // Get all mods (public)
 router.get('/', async (req, res) => {
   try {
-    const mods = await Mod.find().sort({ createdAt: -1 });
+    const mods = await Mod.find().sort({ modId: -1 });
     res.json({ mods });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch mods' });
@@ -57,7 +73,7 @@ router.get('/', async (req, res) => {
 // Get single mod (public)
 router.get('/:id', async (req, res) => {
   try {
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
     res.json({ mod });
   } catch (err) {
@@ -71,21 +87,25 @@ router.post('/', authMiddleware, adminOnly, upload.fields([
   { name: 'mod_file', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const { title, description, size } = req.body;
+    const { title, description } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required' });
 
     const images = req.files?.images ? req.files.images.map(f => f.filename) : [];
-    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : '';
+    const modFile = req.files?.mod_file ? req.files.mod_file[0] : null;
+    const modFileName = modFile ? modFile.filename : '';
+    const modSize = modFile ? formatSize(modFile.size) : '';
+    const modId = await getNextModId();
 
     const mod = await Mod.create({
+      modId,
       title: title.trim(),
       description: description || '',
-      size: size || '',
+      size: modSize,
       imageFilename: images,
-      modFilename: modFile
+      modFilename: modFileName
     });
 
-    res.status(201).json({ message: 'Mod created', id: mod._id });
+    res.status(201).json({ message: 'Mod created', id: mod.modId });
   } catch (err) {
     console.error('Create mod error:', err.message);
     res.status(500).json({ error: 'Failed to create mod' });
@@ -98,23 +118,42 @@ router.put('/:id', authMiddleware, adminOnly, upload.fields([
   { name: 'mod_file', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
-    const { title, description, size } = req.body;
-    const images = req.files?.images ? req.files.images.map(f => f.filename) : mod.imageFilename;
-    const modFile = req.files?.mod_file ? req.files.mod_file[0].filename : mod.modFilename;
+    const { title, description, existing_images } = req.body;
+    let images;
+    if (req.files?.images) {
+      images = req.files.images.map(f => f.filename);
+    } else if (existing_images) {
+      try { images = JSON.parse(existing_images); } catch(e) { images = mod.imageFilename; }
+    } else {
+      images = mod.imageFilename;
+    }
 
-    await Mod.findByIdAndUpdate(req.params.id, {
-      title: title || mod.title,
-      description: description || mod.description,
-      size: size || mod.size,
-      imageFilename: images,
-      modFilename: modFile
-    });
+    let modFileName = mod.modFilename;
+    let modSize = mod.size;
+
+    if (req.files?.mod_file) {
+      // Delete old file
+      if (mod.modFilename) {
+        const oldPath = path.join(__dirname, '..', 'uploads', 'mods', mod.modFilename);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+      modFileName = req.files.mod_file[0].filename;
+      modSize = formatSize(req.files.mod_file[0].size);
+    }
+
+    mod.title = title || mod.title;
+    mod.description = description !== undefined ? description : mod.description;
+    mod.size = modSize;
+    mod.imageFilename = images;
+    mod.modFilename = modFileName;
+    await mod.save();
 
     res.json({ message: 'Mod updated' });
   } catch (err) {
+    console.error('Update mod error:', err.message);
     res.status(500).json({ error: 'Failed to update mod' });
   }
 });
@@ -122,7 +161,7 @@ router.put('/:id', authMiddleware, adminOnly, upload.fields([
 // Delete mod (admin only)
 router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
     // Delete associated files
@@ -137,12 +176,13 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
     }
 
-    await Mod.findByIdAndDelete(req.params.id);
-    await Comment.deleteMany({ modId: req.params.id });
-    await Rating.deleteMany({ modId: req.params.id });
+    await Mod.findByIdAndDelete(mod._id);
+    await Comment.deleteMany({ modId: mod._id });
+    await Rating.deleteMany({ modId: mod._id });
 
     res.json({ message: 'Mod deleted' });
   } catch (err) {
+    console.error('Delete mod error:', err.message);
     res.status(500).json({ error: 'Failed to delete mod' });
   }
 });
@@ -150,7 +190,11 @@ router.delete('/:id', authMiddleware, adminOnly, async (req, res) => {
 // Download counter
 router.post('/:id/download', async (req, res) => {
   try {
-    await Mod.findByIdAndUpdate(req.params.id, { $inc: { downloads: 1 } });
+    const mod = await findMod(req.params.id);
+    if (mod) {
+      mod.downloads = (mod.downloads || 0) + 1;
+      await mod.save();
+    }
     res.json({ message: 'Count updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed' });
@@ -160,7 +204,7 @@ router.post('/:id/download', async (req, res) => {
 // Download mod file
 router.get('/:id/file', async (req, res) => {
   try {
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod || !mod.modFilename) return res.status(404).json({ error: 'File not found' });
 
     const filePath = path.join(__dirname, '..', 'uploads', 'mods', mod.modFilename);
@@ -175,7 +219,9 @@ router.get('/:id/file', async (req, res) => {
 // Get comments for mod
 router.get('/:id/comments', async (req, res) => {
   try {
-    const comments = await Comment.find({ modId: req.params.id }).sort({ createdAt: -1 });
+    const mod = await findMod(req.params.id);
+    if (!mod) return res.status(404).json({ error: 'Mod not found' });
+    const comments = await Comment.find({ modId: mod._id }).sort({ createdAt: -1 });
     res.json({ comments });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch comments' });
@@ -188,11 +234,11 @@ router.post('/:id/comments', authMiddleware, contentLimiter, async (req, res) =>
     const { content } = req.body;
     if (!content || !content.trim()) return res.status(400).json({ error: 'Comment is required' });
 
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
     const comment = await Comment.create({
-      modId: req.params.id,
+      modId: mod._id,
       userId: req.user.id,
       username: req.user.username,
       content: content.trim().slice(0, 300)
@@ -224,9 +270,11 @@ router.delete('/:modId/comments/:commentId', authMiddleware, async (req, res) =>
 // Get ratings for mod
 router.get('/:id/ratings', async (req, res) => {
   try {
-    const ratings = await Rating.find({ modId: req.params.id }).sort({ createdAt: -1 });
+    const mod = await findMod(req.params.id);
+    if (!mod) return res.status(404).json({ error: 'Mod not found' });
+    const ratings = await Rating.find({ modId: mod._id }).sort({ createdAt: -1 });
     const stats = await Rating.aggregate([
-      { $match: { modId: require('mongoose').Types.ObjectId.createFromHexString(req.params.id) } },
+      { $match: { modId: mod._id } },
       { $group: { _id: null, avg: { $avg: '$stars' }, count: { $sum: 1 } } }
     ]);
     const avg = stats.length ? Math.round(stats[0].avg * 10) / 10 : 0;
@@ -243,25 +291,25 @@ router.post('/:id/ratings', authMiddleware, contentLimiter, async (req, res) => 
     const { stars, comment } = req.body;
     if (!stars || stars < 1 || stars > 5) return res.status(400).json({ error: 'Stars must be 1-5' });
 
-    const mod = await Mod.findById(req.params.id);
+    const mod = await findMod(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Mod not found' });
 
-    // Upsert rating
-    const existing = await Rating.findOne({ modId: req.params.id, userId: req.user.id });
+    const existing = await Rating.findOne({ modId: mod._id, userId: req.user.id });
     if (existing) {
       await Rating.findByIdAndUpdate(existing._id, { stars, comment: comment || '' });
     } else {
-      await Rating.create({ modId: req.params.id, userId: req.user.id, stars, comment: comment || '' });
+      await Rating.create({ modId: mod._id, userId: req.user.id, stars, comment: comment || '' });
     }
 
-    // Update mod rating stats
     const stats = await Rating.aggregate([
-      { $match: { modId: require('mongoose').Types.ObjectId.createFromHexString(req.params.id) } },
+      { $match: { modId: mod._id } },
       { $group: { _id: null, avg: { $avg: '$stars' }, count: { $sum: 1 } } }
     ]);
     const avg = stats.length ? Math.round(stats[0].avg * 10) / 10 : 0;
     const count = stats.length ? stats[0].count : 0;
-    await Mod.findByIdAndUpdate(req.params.id, { ratingAvg: avg, ratingCount: count });
+    mod.ratingAvg = avg;
+    mod.ratingCount = count;
+    await mod.save();
 
     res.json({ message: 'Rating saved' });
   } catch (err) {
